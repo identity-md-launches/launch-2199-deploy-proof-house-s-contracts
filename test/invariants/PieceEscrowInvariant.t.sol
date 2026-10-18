@@ -108,9 +108,10 @@ contract EscrowHandler is Test {
     /// key with a broken proof, which is refused.
     function postKey(uint256 a, uint256 eSeed, bool proven) external {
         address actor = actors[a % actors.length];
-        (uint256 price, address seller, address buyer,, bool keyPosted) = _escrow();
+        (uint256 price, address seller, address buyer, uint64 paidAt, bool keyPosted) = _escrow();
         (,,,,,,,, bytes32 vk,) = piece.escrow();
-        bool ok = actor == seller && buyer != address(0) && !keyPosted && proven;
+        bool ok = actor == seller && buyer != address(0) && !keyPosted && proven
+            && block.timestamp < paidAt + piece.SELLER_WINDOW();
         uint256 e = eSeed % (N - 1) + 1;
         if (vm.createWallet(e).publicKeyY & 1 == 1) e = N - e;
         bytes memory wrapped = abi.encodePacked(uint8(2), vm.createWallet(e).publicKeyX, keccak256(abi.encode(eSeed)));

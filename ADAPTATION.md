@@ -13,7 +13,114 @@ to move all configuration into constructors. Artist approval, publication, VRF
 configuration, wiring and sale opening therefore remain owner actions. No missing
 operational value was replaced with a fabricated production address or identifier.
 
-## Review round 4: the independent review of the accepted launch
+## Current mainnet adaptation: resale posting deadline
+
+This section records the changes in this assignment relative to the supplied,
+previously reviewed tree. The review rounds below are retained historical notes;
+their changes, sizes and test counts are not changes or results from this run.
+
+### a0cc401d2e36 — late escrow key posting: reproduced and fixed
+
+Full finding id:
+`a0cc401d2e36398a456f5b5fd8bc801aa04d750f3210a0c7cc636ee7185f4659`.
+
+The supplied proof was copied unchanged to `test/scratch/` and run before editing
+production code. It failed with `next call did not revert as expected`: after
+`paidAt + SELLER_WINDOW + 1`, cancellation succeeded on a snapshot, and after
+restoring that snapshot a seller's valid Schnorr proof still posted a key. This
+reproduces the overlapping posting/cancellation permissions. No imported finding
+was left unreproduced.
+
+Changes in this assignment:
+
+- `src/ArtifactsPiece.sol`: one deadline check in `postEscrowKey`, after the
+  existing seller/buyer/key-posted checks and before proof verification or state
+  changes. At `block.timestamp >= paidAt + SELLER_WINDOW` it reverts with the new
+  `TooLate()` error. NatSpec states the deadline and refund/retry path. This is
+  the only production source change; it applies to both edition and THE SOURCE
+  runtime copies. Storage layout, constructors, deposits, royalties, cancellation,
+  refunds, release and token supply are unchanged.
+- `test/EscrowDeadline.t.sol`: regressions on both an edition claimed through
+  ArtifactsFactory and THE SOURCE created by auction settlement. Tests cover the
+  last valid second, the exact deadline, one second after it, fuzzed later times,
+  rejected deposits and unchanged escrow state, full buyer withdrawal, and a fresh
+  posting window after either seller refund/relisting or buyer cancellation.
+  They use valid seller proofs and confirm a timely key still releases normally.
+- `test/invariants/PieceEscrowInvariant.t.sol`: the handler's expected-success
+  condition now requires a post to be strictly inside the seller's window.
+- `test/NothingStuck.t.sol`: the release-timeout test previously posted after
+  60 hours, contrary to the corrected deadline. It now posts after 23 hours and
+  still checks rejection at key-time + 71 hours and release at + 72 hours.
+- `test/LaunchDeployment.t.sol`: runs the existing eight-contract CREATE2,
+  constructor-isolation, ownership and opcode/size checks on chain id 1 instead
+  of Sepolia, matching this launch.
+- `README.md`: documents the strict posting deadline and refund/retry path,
+  including the public-calldata limitation below; identifies the exception to
+  adopting the prior review unchanged and updates the piece's compiled size.
+- `ADAPTATION.md`: records this reproduction, patch, verification and its limits.
+
+The deadline makes successful key posting and buyer cancellation mutually
+exclusive in the same escrow state. It cannot conceal calldata already broadcast:
+a pending post delayed across the deadline, or an expired post sent despite the
+guard, can still expose the wrapped key. Seller clients must respect the deadline
+with inclusion margin and use refund/retry with a fresh viewing key after expiry.
+No claim is made that a revert restores key secrecy. Changing cancellation into
+a multi-step protocol would be a broader redesign than the requested minimal fix.
+
+`launch.json`, the eight constructors, ownership rules, build configuration and
+dependencies remain unchanged. No live transaction is part of this worker task;
+the deployment service uses the supplied manifest and the owner configures the
+applications afterwards.
+
+### Bytecode comparison for this assignment
+
+With the same configured solc 0.8.26 optimizer settings, ArtifactsPiece's runtime
+is **24,132 bytes** (baseline 24,385), leaving **444 bytes** below EIP-170. Its
+creation code is 24,320 bytes before its single address argument. The size decrease
+comes from the compiler's output for the deadline/error addition; no separate
+optimization or build-setting change was made.
+
+Saved pre-edit compiler artifacts were compared against the patched artifacts:
+the other seven launch contracts' creation bytecode and runtime templates, and
+the ArtCollection template, are byte-for-byte unchanged. Immutable dependency
+addresses in deployed runtimes must still be resolved from this build's actual
+deployment addresses. The existing manifest and its backward references handle
+that; the changed piece bytecode can change CREATE2 address predictions.
+
+### Verification for this assignment
+
+Foundry 1.8.3 and solc 0.8.26, with the repository's unchanged configuration.
+Every test invocation used the requested fuzz seed:
+`0xd866aa7377ecb437719b479dd53badc82fc76d051a9db942f07bd62360986989`.
+
+- Supplied proof before the fix: **1 failed**, with the expected late-post
+  acceptance described above. After the fix: **1 passed**. The proof was run
+  unchanged from scratch and then kept there as a non-test text file, so it is
+  excluded from the delivered suite count.
+- Focused regression run: **13 passed**, comprising the supplied proof and the
+  12 new regression tests (six each for editions and THE SOURCE). Both new fuzz
+  tests ran 64 cases.
+- `forge build`: **passed**, with existing compiler/lint warnings, including the
+  unused parameter in `test/invariants/ArtHouseInvariant.t.sol`.
+- `FOUNDRY_FUZZ_SEED=0xd866aa7377ecb437719b479dd53badc82fc76d051a9db942f07bd62360986989 forge test`:
+  **271 passed, 0 failed, 2 skipped**, across 36 suites. This includes the escrow
+  invariant handler (96 runs, depth 60), the updated release-timeout regression,
+  and the deployment checks on chain id 1.
+- The skipped entries are the existing `BurnerForkTest.setUp` and
+  `VrfForkTest.setUp`, whose `FORK_URL` guards skipped them. No live-fork results
+  are claimed for this assignment.
+- Manifest ABI inspection passed: eight nonpayable constructors, supported
+  static arguments, correct argument counts, backward-only references, no
+  unresolved library links, and bounded creation/runtime code. The existing
+  deployment tests also pass with code-less dependencies, explicit ownership,
+  and protected-style opcode scans of the actual deployed runtimes.
+- Baseline bytecode comparison and `git diff --check` passed. The manifest,
+  protected build files and dependencies have no diff.
+
+No new dependencies, live deployments, signing, explorer verification, Slither
+or Mythril runs were needed or performed.
+
+## Historical review round 4: the independent review of the accepted launch
 
 The accepted work was reopened with two reproducible findings and seven advisory
 ones. Each was reproduced before anything changed; the answers are in

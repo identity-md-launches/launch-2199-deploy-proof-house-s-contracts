@@ -28,13 +28,14 @@ only when a piece is bought.
 `$owner` is the curator: `0xd3e32C1eBEa3a675EffCaAcAf89196948Abd1386`. `script/Deploy.s.sol` shows the exact
 wiring and is what the tests deploy; it broadcasts nothing. Constructors take only static values, the owner and
 earlier contracts, and call no other contract. ArtifactsSource was split out of ArtifactsFactory so every
-runtime stays under the EIP-170 limit of 24,576 bytes (largest: ArtifactsPiece, 24,252 bytes, 324 under it;
+runtime stays under the EIP-170 limit of 24,576 bytes (largest: ArtifactsPiece, 24,132 bytes, 444 under it;
 `forge build --sizes`).
 
 Ownership is two-step everywhere (`transferOwnership` → `acceptOwnership`); there is no `renounceOwnership`,
 no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH leaves contracts by `call`, pull-style.
 
-IMD's launch review (job ea8e8e20, launch 2179, delivered commit 5afa6c7) is adopted as is: runtime copies instead of
+IMD's launch review (job ea8e8e20, launch 2179, delivered commit 5afa6c7) is adopted with the resale posting deadline
+fix recorded in ADAPTATION.md. Its existing protections remain: runtime copies instead of
 EIP-1167 clones, piece and collection set-up only by their own factory, capped and checked reads of the Broker Pass,
 the gate's seats and token and the member contract, and the fallback draw's rules against a Chainlink answer landing
 on a known draw. ADAPTATION.md records every change and finding.
@@ -127,8 +128,11 @@ on a known draw. ADAPTATION.md records every change and finding.
   z = k + c·e mod n, c = keccak256("Proof House key wrap v2 proof" ‖ chainid ‖ piece ‖ buyer ‖ viewingKey ‖
   keccak256(wrapped) ‖ r) mod n), so nobody can post a key built from someone else's E. For `SELLER_WINDOW`
   (24 hours) from payment only the seller can end the sale: send the key, or `refundBuyer()` (only before the key).
-  After it the buyer may `cancel()`, while no key is posted: a key in a pending transaction is public, and without
-  the window a buyer could read it and cancel ahead of it. `release()` by the buyer once the key is posted, or by
+  At or after `paidAt + SELLER_WINDOW`, posting reverts with `TooLate()` and the buyer may `cancel()` while no key
+  is posted. A seller who misses the deadline can `refundBuyer()`, relist and have the buyer buy again with a fresh
+  viewing key. Clients must avoid broadcasting expired posts and allow time for inclusion before the deadline:
+  even a reverted or pending transaction exposes its calldata, so a buyer could read the key and cancel ahead of
+  a post delayed past the window. `release()` by the buyer once the key is posted, or by
   anyone 72 hours (`ESCROW_TIMEOUT`) after it was posted: the seller gets the price less the 7.5% royalty and the 2.5%
   broker share (if an eligible broker other than the seller was named; otherwise it stays with the seller), plus the
   deposit. Until release the buyer may `proveFakeKey(proof)` (Chaum-Pedersen, `KeyProof.isFake`): the payment and the

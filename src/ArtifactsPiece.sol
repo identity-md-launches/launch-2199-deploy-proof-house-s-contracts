@@ -96,6 +96,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     error KeyAlreadyPosted();
     error KeyNotPosted();
     error TooEarly();
+    error TooLate();
     error WrongPrice();
     error NoViewingKey();
     error TransferFailed();
@@ -231,11 +232,13 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     /// @notice The seller sends the piece's key, wrapped to the buyer's viewing key for this purchase, with a deposit
     /// of 10% of the price: back to the seller with the payment at release, the buyer's if the key is proven fake.
     /// (`r`, `z`) prove the seller made this wrapped key for this buyer and key (KeyProof.knowsWrap).
+    /// Must arrive before paidAt + SELLER_WINDOW; after that, refund the buyer and start a new sale instead.
     function postEscrowKey(bytes calldata wrapped, address r, uint256 z) external payable {
         Escrow storage e = escrow;
         if (msg.sender != e.seller) revert NotSeller();
         if (e.buyer == address(0)) revert NoEscrowBuyer();
         if (e.keyPosted) revert KeyAlreadyPosted();
+        if (block.timestamp >= e.paidAt + SELLER_WINDOW) revert TooLate();
         if (!keyProof.knowsWrap(wrapped, e.viewingKey, e.buyer, r, z)) revert BadWrappedKey();
         if (msg.value != depositFor(e.price)) revert WrongPrice();
         e.keyPosted = true;

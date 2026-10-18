@@ -98,7 +98,7 @@ contract LaunchDeploymentTest is Test {
     }
 
     function _deploy(bool emptyDependencies) internal returns (address[] memory deployed) {
-        vm.chainId(11155111);
+        vm.chainId(1);
         LaunchDeploymentHarness harness = new LaunchDeploymentHarness();
         (bytes[] memory codes, address[] memory predicted) = _codes(harness, emptyDependencies);
         deployed = harness.deployAll(codes);

@@ -293,10 +293,10 @@ contract NothingStuckTest is Fixture {
 
     function test_the72HoursCountFromTheKey() public {
         ArtifactsPiece piece = _sold();
-        vm.warp(vm.getBlockTimestamp() + 60 hours); // the seller is slow
+        vm.warp(vm.getBlockTimestamp() + 23 hours); // late, but still inside the seller's posting window
         _postKey(piece, alice, 0.2 ether);
         uint256 keyAt = vm.getBlockTimestamp();
-        vm.warp(keyAt + 71 hours); // 131 hours after paying: still the buyer's time to check
+        vm.warp(keyAt + 71 hours); // 94 hours after paying: still the buyer's time to check
         vm.prank(carol);
         vm.expectRevert(ArtifactsPiece.TooEarly.selector);
         piece.release();
