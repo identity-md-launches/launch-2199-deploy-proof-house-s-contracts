@@ -9,7 +9,7 @@ import {Seal} from "./libs/Seal.sol";
 import {IArtHouse, ISourceStore, Traits} from "./interfaces/Interfaces.sol";
 import {KeyProof} from "./KeyProof.sol";
 
-/// @notice One ARTIFACTS piece: a one-token ERC-721 + ERC-2981, deployed as an EIP-1167 clone at claim.
+/// @notice One ARTIFACTS piece: a one-token ERC-721 + ERC-2981, deployed as an independent runtime copy at claim.
 /// Holds the ciphertext pointer, public traits, key commitment and the current owner's wrapped content key.
 /// Runs its own keyed resale escrow, where a key that doesn't open can be proven fake (KeyProof) and costs the seller a
 /// deposit, and re-keying after plain transfers. THE SOURCE (piece 256) adds a one-time
@@ -27,7 +27,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     string public constant RENDER_SUFFIX =
         '"),true);document.body.innerHTML=s;try{if(parent!==window)parent.postMessage({artifacts:s},"*")}catch(e){}</script></body></html>';
 
-    /// @notice Checks fake-key proofs; shared by every piece (an immutable of the implementation each clone runs).
+    /// @notice Checks fake-key proofs; shared by every piece (an immutable preserved in each runtime copy).
     KeyProof public immutable keyProof;
 
     address public controller; // ArtifactsFactory (editions) or ArtifactsSource (THE SOURCE)
@@ -82,6 +82,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     event Withdrawn(address indexed to, uint256 amount);
 
     error AlreadyInitialized();
+    error NotController();
     error NotTokenOwner();
     error NotPreviousOwner();
     error NotSource();
@@ -108,7 +109,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
     constructor(address keyProof_) {
         if (keyProof_ == address(0)) revert NoKeyProof();
         keyProof = KeyProof(keyProof_);
-        controller = address(this); // lock the implementation; only clones can be initialised
+        controller = address(this); // lock the implementation; only runtime copies can be initialised
     }
 
     // ---------- initialisation (by the controller, at claim / settlement) ----------
@@ -126,6 +127,7 @@ contract ArtifactsPiece is ERC721Lite, ReentrancyGuard {
         bytes32 ownerViewingKey_
     ) external {
         if (controller != address(0)) revert AlreadyInitialized();
+        if (msg.sender != controller_ || controller_.code.length == 0) revert NotController();
         controller = controller_;
         house = IArtHouse(house_);
         pieceId = pieceId_;

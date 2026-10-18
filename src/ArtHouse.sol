@@ -25,6 +25,8 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     address public constant BUYBACK = address(uint160(uint256(keccak256("proofhouse.buyback"))));
     /// @notice The gas an artist's payout address gets to receive its share at a sale (see _payArtist).
     uint256 public constant ARTIST_PAY_GAS = 50_000;
+    /// @notice Bound the optional pass lookup so a broken pass cannot block sales.
+    uint256 public constant BROKER_CALL_GAS = 100_000;
     uint256 public constant MAX_PIECE_BYTES = 100_000;
     address public constant ETH = address(0);
 
@@ -215,7 +217,19 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
     function isEligibleBroker(address broker) public view returns (bool) {
         if (broker == address(0)) return false;
         if (brokers[broker]) return true;
-        return brokerPass != address(0) && IBalanceOf(brokerPass).balanceOf(broker) > 0;
+        address pass = brokerPass;
+        if (pass == address(0)) return false;
+        bytes memory data = abi.encodeCall(IBalanceOf.balanceOf, (broker));
+        uint256 g = BROKER_CALL_GAS;
+        bool ok;
+        uint256 held;
+        assembly ("memory-safe") {
+            mstore(0, 0)
+            ok := staticcall(g, pass, add(data, 32), mload(data), 0, 32)
+            if iszero(eq(returndatasize(), 32)) { ok := 0 }
+            if ok { held := mload(0) }
+        }
+        return ok && held > 0;
     }
 
     // ---------- collections ----------
@@ -226,7 +240,7 @@ contract ArtHouse is TwoStepOwnable, ReentrancyGuard {
         returns (address collection)
     {
         if (!artists[artist].approved) revert NotApprovedArtist();
-        collection = Clones.clone(collectionImplementation);
+        collection = Clones.copyCode(collectionImplementation);
         IArtCollection(collection).initialize(address(this), name_, symbol_);
         _newCollection(collection, artist, false);
         emit CollectionCreated(collection, artist, name_, symbol_);

@@ -160,7 +160,10 @@ contract NothingStuckTest is Fixture {
         assertEq(factory.editionsOf(alice).length + factory.editionsOf(bob).length, 2);
     }
 
-    /// @dev Re-requests never push the fallback back: it counts from the purchase.
+    /// @dev Re-requests never push the fallback back: it counts from the purchase. But a fallback never starts on a
+    /// request the coordinator still holds and may yet answer (younger than VRF_RETRY_BLOCKS): the buyer would hold two
+    /// draws and pick (review round 4, finding 07f1616add6c). Once Chainlink has dropped it, or answered it without the
+    /// callback landing, the fallback may start.
     function test_fallbackDraw_countsFromThePurchase() public {
         _publishAll();
         _openSale(1 ether);
@@ -173,9 +176,32 @@ contract NothingStuckTest is Fixture {
             id = factory.rerequestRandomness(id);
             assertEq(factory.purchaseBlock(id), at);
         }
+        uint256 lastRequested = factory.requestBlock(id);
         vm.roll(at + factory.FALLBACK_BLOCKS());
-        factory.startFallbackDraw(id); // three days after paying, though the last request is under a day old
+        // three days after paying, but the last request is under a day old and Chainlink still holds it
+        vm.expectRevert(ArtifactsFactory.RequestTooRecent.selector);
+        factory.startFallbackDraw(id);
+        vm.roll(lastRequested + factory.VRF_RETRY_BLOCKS());
+        factory.startFallbackDraw(id); // Chainlink has dropped it by now
         assertGt(factory.fallbackBlock(id), 0);
+    }
+
+    /// @dev The same purchase, when the coordinator answered the young request but its callback failed: it no longer
+    /// holds the request, so nothing can answer it and the fallback may start at once.
+    function test_fallbackDraw_startsOnAYoungRequestTheCoordinatorNoLongerHolds() public {
+        _publishAll();
+        _openSale(1 ether);
+        vm.prank(alice);
+        uint256 id = factory.buy{value: 1 ether}(address(0));
+        uint256 at = vm.getBlockNumber();
+        vm.roll(at + factory.FALLBACK_BLOCKS());
+        vm.prank(alice);
+        id = factory.rerequestRandomness(id);
+        vm.expectRevert(ArtifactsFactory.RequestTooRecent.selector);
+        factory.startFallbackDraw(id);
+        vrf.answerWithFailedCallback(id);
+        factory.startFallbackDraw(id);
+        assertEq(factory.fallbackInFlight(), id);
     }
 
     function test_callbackGasCanOnlyGoUpOnceTheSaleOpens() public {
@@ -411,17 +437,16 @@ contract NothingStuckTest is Fixture {
 
     // ---------- the real cryptography: keys and proofs made by site/sealcrypto.js ----------
 
-    /// @dev A piece contract (an EIP-1167 clone of the template) at the address the fixture proofs were made for, with
+    /// @dev A piece runtime copy at the address the fixture proofs were made for, with
     /// the fixture's id and key commitment, held by alice; bob is the fixture's buyer, bought in with its viewing key.
     function _realPiece() internal returns (ArtifactsPiece piece, string memory json, address buyer) {
         json = vm.readFile("test/fixtures/keyproof.json");
         address at = vm.parseJsonAddress(json, ".ctx.piece");
         buyer = vm.parseJsonAddress(json, ".ctx.buyer");
         vm.chainId(vm.parseJsonUint(json, ".ctx.chainId"));
-        vm.etch(
-            at, abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3")
-        );
+        vm.etch(at, address(pieceImpl).code);
         piece = ArtifactsPiece(at);
+        vm.prank(address(factory));
         piece.initialize(
             address(factory),
             address(house),

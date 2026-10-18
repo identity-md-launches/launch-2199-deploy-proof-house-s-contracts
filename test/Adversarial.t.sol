@@ -884,14 +884,13 @@ contract ArtifactsEdgeTest is Fixture {
         factory.claim(e);
     }
 
-    function test_claimedPieceIsAnEip1167CloneOfTheImplementation() public {
+    /// @dev Launch policy forbids the former EIP-1167 proxy; each edition must contain the full runtime.
+    function test_claimedPieceIsAFullCopyOfTheImplementation() public {
         _publishAll();
         _openSale(1 ether);
         uint256 e = _buyAndAssign(alice, address(0), 3);
         ArtifactsPiece piece = _claim(alice, e);
-        bytes memory expected =
-            abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3");
-        assertEq(address(piece).code, expected, "EIP-1167 runtime pointing at ArtifactsPiece");
+        assertEq(address(piece).code, address(pieceImpl).code, "independent ArtifactsPiece runtime");
         assertEq(pieceImpl.controller(), address(pieceImpl), "implementation locked to itself");
         assertEq(piece.controller(), address(factory));
         assertEq(address(piece.house()), address(house));
@@ -1134,10 +1133,11 @@ contract PieceEdgeTest is Fixture {
         assertEq(piece.balanceOf(carol), 1);
     }
 
-    /// @dev THE SOURCE's reveal gate, reached through a hand-initialised clone with a stub controller.
+    /// @dev THE SOURCE's reveal gate, reached through a runtime copy initialized by its stub controller.
     function test_revealNeedsTheSourceLocked_andEmptyRendererURI() public {
         StubController ctl = new StubController();
-        ArtifactsPiece src = ArtifactsPiece(Clones.clone(address(pieceImpl)));
+        ArtifactsPiece src = ArtifactsPiece(Clones.copyCode(address(pieceImpl)));
+        vm.prank(address(ctl));
         src.initialize(
             address(ctl), address(house), 256, alice, _traits(256), address(0), SOURCE_COMMITMENT, "", true, bytes32(0)
         );

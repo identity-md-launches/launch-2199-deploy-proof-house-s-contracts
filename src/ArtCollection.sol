@@ -5,7 +5,7 @@ import {ERC721Lite} from "./base/ERC721Lite.sol";
 import {Encoding} from "./libs/Encoding.sol";
 import {IArtHouse} from "./interfaces/Interfaces.sol";
 
-/// @notice A plain SVG collection: ERC-721 + ERC-2981 clone, minted only by ArtHouse, with on-chain base64 JSON metadata.
+/// @notice A plain SVG collection: ERC-721 + ERC-2981 runtime copy, minted only by ArtHouse, with on-chain base64 JSON metadata.
 contract ArtCollection is ERC721Lite {
     IArtHouse public house;
 
@@ -13,12 +13,13 @@ contract ArtCollection is ERC721Lite {
     error NotHouse();
 
     constructor() {
-        // Lock the implementation itself: only clones can be initialised.
+        // Lock the implementation itself: only independent runtime copies can be initialised.
         house = IArtHouse(address(this));
     }
 
     function initialize(address house_, string calldata name_, string calldata symbol_) external {
         if (address(house) != address(0)) revert AlreadyInitialized();
+        if (msg.sender != house_ || house_.code.length == 0) revert NotHouse();
         house = IArtHouse(house_);
         _name = name_;
         _symbol = symbol_;

@@ -52,7 +52,7 @@ abstract contract HolderGate {
     }
 
     /// @notice A member: the membership contract's view returns at least the minimum for this wallet. Read with a gas
-    /// cap and only 32 bytes of its answer, so the membership contract can never make a buy fail.
+    /// cap and exactly one return word, so dynamic ABI offsets cannot count as points. Only 32 bytes are copied.
     function isMember(address account) public view returns (bool) {
         address m = gateMember;
         if (m == address(0)) return false;
@@ -63,7 +63,7 @@ abstract contract HolderGate {
         assembly ("memory-safe") {
             mstore(0, 0)
             ok := staticcall(g, m, add(data, 32), mload(data), 0, 32)
-            if lt(returndatasize(), 32) { ok := 0 } // after the call: its own answer, a whole word or nothing
+            if iszero(eq(returndatasize(), 32)) { ok := 0 } // reject dynamic, short and multi-word answers
             if ok { n := mload(0) }
         }
         return ok && n >= gateMemberMin;
@@ -78,32 +78,36 @@ abstract contract HolderGate {
     function holdsToken(address account) public view returns (bool) {
         address t = gateToken;
         if (t == address(0)) return false;
-        try IBalanceOf(t).balanceOf(account) returns (uint256 b) {
-            return b >= gateMinBalance;
-        } catch {
-            return false;
-        }
+        (bool ok, uint256 b) = _readWord(t, abi.encodeCall(IBalanceOf.balanceOf, (account)));
+        return ok && b >= gateMinBalance;
     }
 
     /// @notice Holds at least one identity.md seat.
     function holdsSeat(address account) public view returns (bool) {
         address s = gateSeats;
         if (s == address(0)) return false;
-        try IBalanceOf(s).balanceOf(account) returns (uint256 b) {
-            return b > 0;
-        } catch {
-            return false;
-        }
+        (bool ok, uint256 b) = _readWord(s, abi.encodeCall(IBalanceOf.balanceOf, (account)));
+        return ok && b > 0;
     }
 
     /// @dev Holds this particular seat.
     function _ownsSeat(address account, uint256 seatId) internal view returns (bool) {
         address s = gateSeats;
         if (s == address(0)) return false;
-        try IOwnerOf(s).ownerOf(seatId) returns (address o) {
-            return o == account;
-        } catch {
-            return false;
+        (bool ok, uint256 o) = _readWord(s, abi.encodeCall(IOwnerOf.ownerOf, (seatId)));
+        return ok && o == uint256(uint160(account));
+    }
+
+    /// @dev One word from a view on `target`: not ok if the call reverts or answers anything but exactly 32 bytes,
+    /// which includes an address with no code there (an empty answer). A Solidity try/catch would not do: the
+    /// callee's empty return fails to decode in the caller, and that revert is the caller's, not caught. Only 32
+    /// bytes are copied.
+    function _readWord(address target, bytes memory data) private view returns (bool ok, uint256 word) {
+        assembly ("memory-safe") {
+            mstore(0, 0)
+            ok := staticcall(gas(), target, add(data, 32), mload(data), 0, 32)
+            if iszero(eq(returndatasize(), 32)) { ok := 0 }
+            if ok { word := mload(0) }
         }
     }
 }

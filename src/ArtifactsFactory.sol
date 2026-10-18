@@ -9,7 +9,7 @@ import {Clones} from "./libs/Clones.sol";
 import {IArtHouse, IArtifactsPiece, IVRFCoordinatorV2Plus, Traits} from "./interfaces/Interfaces.sol";
 
 /// @notice Sells the 255 ARTIFACTS editions at one ETH price through the Proof House ledger, assigns editions
-/// with Chainlink VRF v2.5, and deploys each buyer's piece clone at claim.
+/// with Chainlink VRF v2.5, and deploys each buyer's independent piece contract at claim.
 contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     uint256 public constant EDITIONS = 255;
     /// @notice Most editions one wallet can buy, across all its purchases.
@@ -368,13 +368,14 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     /// @notice If a purchase's request will never be answered, the curator or the buyer may ask again: at once when
     /// the coordinator no longer holds it (it answered, but the callback failed), otherwise after VRF_RETRY_BLOCKS,
     /// once Chainlink has dropped it. The old id is forgotten, so a late answer to it is rejected as unknown and the
-    /// buyer still gets exactly one edition. Not once a fallback draw has started: its result stands.
+    /// buyer still gets exactly one edition. Not once a fallback draw has started: its result stands for as long as
+    /// its block's hash can be read; a draw nobody finished in that time is dead, and asking again clears it.
     function rerequestRandomness(uint256 requestId) external returns (uint256 newRequestId) {
         address buyer = requestBuyer[requestId];
         if (buyer == address(0)) revert UnknownRequest();
         if (msg.sender != owner && msg.sender != buyer) revert NotBuyer();
         if (requestEdition[requestId] != 0) revert AlreadyFulfilled();
-        if (fallbackBlock[requestId] != 0) revert FallbackPending();
+        if (_fallbackLive(requestId)) revert FallbackPending();
         if (_fallbackLive(fallbackInFlight)) revert FallbackBusy(); // no new answer while a fallback draw is under way
         if (block.number < requestBlock[requestId] + VRF_RETRY_BLOCKS && _stillHeld(requestId)) {
             revert RequestTooRecent();
@@ -383,6 +384,8 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
         delete requestBuyer[requestId];
         delete requestBlock[requestId];
         delete purchaseBlock[requestId];
+        delete fallbackBlock[requestId]; // a dead draw (its hash gone unread) ends with the request it was for
+        if (fallbackInFlight == requestId) delete fallbackInFlight;
         newRequestId = _requestRandomness(buyer, bought);
         emit Rerequested(requestId, newRequestId, buyer);
     }
@@ -413,8 +416,12 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     }
 
     /// @notice VRF callback: assigns a uniformly random unassigned edition (Fisher-Yates over the remaining set).
+    /// Not once a started fallback draw's block is behind us: from then on its hash is public, and that draw's result
+    /// stands (finishFallbackDraw), so nobody can hold a known result against a later answer and keep the one they like.
     function rawFulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) external {
         if (msg.sender != address(vrfCoordinator)) revert NotCoordinator();
+        uint256 target = fallbackBlock[requestId];
+        if (target != 0 && block.number > target) revert FallbackPending();
         _assign(requestId, randomWords[0]);
         lastAnsweredBlock = block.number;
     }
@@ -422,12 +429,18 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     /// @notice Starts the fallback draw for a purchase Chainlink never answered, FALLBACK_BLOCKS after it was made and
     /// once Chainlink has answered nothing for as long (while it answers others, ask it again): anyone may, so no paid
     /// edition waits on any one person. It picks a block FALLBACK_DELAY ahead, whose hash
-    /// nobody knows yet. Again only if a started draw's block hash can no longer be read (see BLOCK_HISTORY).
+    /// nobody knows yet. Not while the coordinator may still answer the request itself (one it holds that is younger
+    /// than VRF_RETRY_BLOCKS, e.g. just re-requested): the buyer would otherwise hold two draws, the fallback's known
+    /// first, and keep whichever they like. Again only if a started draw's block hash can no longer be read (see
+    /// BLOCK_HISTORY).
     function startFallbackDraw(uint256 requestId) external {
         if (requestBuyer[requestId] == address(0)) revert UnknownRequest();
         if (requestEdition[requestId] != 0) revert AlreadyFulfilled();
         if (block.number < purchaseBlock[requestId] + FALLBACK_BLOCKS) revert RequestTooRecent();
         if (block.number < lastAnsweredBlock + FALLBACK_BLOCKS) revert ChainlinkAnswering(); // ask it again instead
+        if (block.number < requestBlock[requestId] + VRF_RETRY_BLOCKS && _stillHeld(requestId)) {
+            revert RequestTooRecent();
+        }
         if (_fallbackLive(requestId)) revert FallbackPending();
         uint256 busy = fallbackInFlight;
         if (busy != requestId && _fallbackLive(busy)) revert FallbackBusy(); // finish that one first (anyone may)
@@ -515,15 +528,19 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
             // already claimed (without its key, after KEY_WAIT) or re-sold without being re-keyed: the key goes into
             // the piece, wrapped to whoever holds it now; the piece takes it only into an empty key slot
             IArtifactsPiece(piece).rewrapFor(wrapped);
-            emit WrappedKeyPosted(edition);
-            return;
+        } else {
+            if (viewingKeyOf[buyer] == bytes32(0)) revert NoViewingKey();
+            _wrappedKey[edition] = wrapped;
         }
-        if (viewingKeyOf[buyer] == bytes32(0)) revert NoViewingKey();
-        _wrappedKey[edition] = wrapped;
-        emit WrappedKeyPosted(edition);
+        // Keep the event ABI unchanged while avoiding a compiler constant-data tail containing 0xf4.
+        // The launch scans every runtime byte outside PUSH data, including otherwise unreachable constants.
+        bytes memory signature = bytes("WrappedKeyPosted(uint256)");
+        assembly ("memory-safe") {
+            log2(0, 0, keccak256(add(signature, 32), mload(signature)), edition)
+        }
     }
 
-    /// @notice Deploys the edition's piece contract (EIP-1167 clone) and mints its single token to the buyer.
+    /// @notice Deploys an independent runtime copy for the edition and mints its single token to the buyer.
     function claim(uint256 edition) external nonReentrant returns (address piece) {
         piece = _claim(edition);
     }
@@ -546,7 +563,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
         bytes memory wrapped = _wrappedKey[edition];
         // no key yet: only once KEY_WAIT has passed since the draw (the key can still be sent into the piece)
         if (wrapped.length == 0 && block.timestamp < editionAssignedAt[edition] + KEY_WAIT) revert KeyNotPosted();
-        piece = Clones.clone(pieceImplementation);
+        piece = Clones.copyCode(pieceImplementation);
         pieceContract[edition] = piece;
         isPiece[piece] = true;
         PieceData storage p = _pieces[edition];

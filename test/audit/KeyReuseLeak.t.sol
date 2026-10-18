@@ -18,10 +18,9 @@ contract KeyReuseLeakTest is Fixture {
         address at = 0x1111111111111111111111111111111111111111;
         address buyer = 0x2222222222222222222222222222222222222222;
         vm.chainId(31337);
-        vm.etch(
-            at, abi.encodePacked(hex"363d3d373d3d3d363d73", address(pieceImpl), hex"5af43d82803e903d91602b57fd5bf3")
-        );
+        vm.etch(at, address(pieceImpl).code);
         ArtifactsPiece piece = ArtifactsPiece(at);
+        vm.prank(address(factory));
         piece.initialize(
             address(factory), address(house), 9, alice, _traits(9), address(0), PIECE_COMMITMENT, "k", false, bytes32(0)
         );

@@ -18,7 +18,7 @@ only when a piece is bought.
 | 0 | `ArtStorage` | `($owner)` | SSTORE2 chunk store for plain SVG collections; written only by ArtHouse |
 | 1 | `ArtHouse` | `($owner, $contract:ArtStorage, IMD)` | The ledger: artists, brokers, sale modules, splits, balances, plain collections, submissions. Its constructor deploys the `ArtCollection` implementation. |
 | 1b | `KeyProof` | `()` | Stateless checker: proves a resale's wrapped key doesn't open its piece (Chaum-Pedersen on secp256k1, checked with ecrecover and modexp); a key that opens can never be proven fake |
-| 2 | `ArtifactsPiece` | `($contract:KeyProof)` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (clone per edition; full copy for THE SOURCE); its resale escrow takes a 10% seller deposit with the key, returned at release, the buyer's if the key is proven fake |
+| 2 | `ArtifactsPiece` | `($contract:KeyProof)` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (each one a full runtime copy, edition and THE SOURCE alike: no proxy and no DELEGATECALL anywhere, as IMD's launch scan requires); its resale escrow takes a 10% seller deposit with the key, returned at release, the buyer's if the key is proven fake |
 | 3 | `ArtifactsFactory` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | Publishes the 255 editions, sells them, VRF assignment, claims |
 | 4 | `ArtifactsSource` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | THE SOURCE: encrypted payload, single-lot auction, settlement, one key delivery |
 | 5 | `BrokerPass` | `(identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | 100 free passes that make a wallet a broker: one per seat or piece and one per wallet, ever; claims open at a start time the factory's owner sets once (`setClaimsOpenAt`) |
@@ -33,6 +33,11 @@ runtime stays under the EIP-170 limit of 24,576 bytes (largest: ArtifactsPiece, 
 
 Ownership is two-step everywhere (`transferOwnership` → `acceptOwnership`); there is no `renounceOwnership`,
 no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH leaves contracts by `call`, pull-style.
+
+IMD's launch review (job ea8e8e20, launch 2179, delivered commit 5afa6c7) is adopted as is: runtime copies instead of
+EIP-1167 clones, piece and collection set-up only by their own factory, capped and checked reads of the Broker Pass,
+the gate's seats and token and the member contract, and the fallback draw's rules against a Chainlink answer landing
+on a known draw. ADAPTATION.md records every change and finding.
 
 ## After launch (curator, in this order)
 
@@ -106,8 +111,8 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
   the `Purchased`/`EditionAssigned`/`Rerequested`/`FallbackDrawStarted` events.
 - **Claim**: buyer `registerViewingKey(viewingKey)` (version 2: the x of a secp256k1 point, see PROTOCOL.md); the
   curator wraps each K offline to its buyer's key and posts them with `postWrappedKeys(editions, wrapped)` (or
-  `postWrappedKey(edition, wrapped)`); buyer (or curator) `claim(edition)` (or `claimMany`) deploys the EIP-1167 clone
-  of ArtifactsPiece, named `ARTIFACTS #NNN`, symbol `ARTIFACTS`, holding the ciphertext pointer, traits, commitment
+  `postWrappedKey(edition, wrapped)`); buyer (or curator) `claim(edition)` (or `claimMany`) deploys a full runtime copy
+  of ArtifactsPiece (about 5.5M gas: its ~24 KB of code is stored again for each piece, the price of having no proxy), named `ARTIFACTS #NNN`, symbol `ARTIFACTS`, holding the ciphertext pointer, traits, commitment
   and wrapped key, and mints token 1 to the buyer. There is no other mint path. An edition whose key hasn't come
   `KEY_WAIT` (30 days) after its draw can be claimed without it; the curator can still post the key into the piece
   later (`postWrappedKeys` sends it on to the piece's `rewrapFor`).
@@ -155,7 +160,7 @@ no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH lea
 
 ## Plain SVG collections (ArtHouse)
 
-`createCollection(name, symbol, artist)` clones `ArtCollection`; supply = registered pieces. The curator or the
+`createCollection(name, symbol, artist)` deploys a runtime copy of `ArtCollection`; supply = registered pieces. The curator or the
 collection's artist (while still approved: `revokeArtist` ends curation rights as well as new collections)
 `registerPiece(collection, pieceId, contentHash, title, description)` (next id only),
 `uploadChunk(collection, pieceId, index, data)` (next index only, ≤100 KB per piece), `finalizePiece`
