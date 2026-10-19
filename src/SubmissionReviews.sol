@@ -202,9 +202,9 @@ contract SubmissionReviews {
         returns (uint256[] memory voices, Review[] memory list)
     {
         uint256[] storage ids = _voices[submissionId];
-        uint256 end = start + count;
-        if (end > ids.length) end = ids.length;
-        uint256 n = end > start ? end - start : 0;
+        // clamp before adding, so `count = type(uint256).max` (everything from `start`) returns the tail
+        uint256 n = start >= ids.length ? 0 : ids.length - start;
+        if (count < n) n = count;
         voices = new uint256[](n);
         list = new Review[](n);
         for (uint256 i; i < n; ++i) {

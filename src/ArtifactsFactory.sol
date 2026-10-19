@@ -15,9 +15,9 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     /// @notice Most editions one wallet can buy, across all its purchases.
     uint256 public constant MAX_PER_WALLET = 5;
     /// @notice Bounds for the VRF callback's gas limit. One assignment writes a handful of new storage slots, whose
-    /// price changes with Ethereum's upgrades (≈150k gas before Glamsterdam's repricing, ≈670k after, as measured on
-    /// Sepolia), so the curator can set it; Chainlink charges the gas actually used, not the limit.
-    uint32 public constant VRF_CALLBACK_GAS_MIN = 150_000;
+    /// price changes with Ethereum's upgrades (≈176k–217k gas before Glamsterdam's repricing, ≈670k after, as measured
+    /// on Sepolia), so the curator can set it; the minimum stays above the dearest draw of today's pricing; Chainlink charges the gas actually used, not the limit.
+    uint32 public constant VRF_CALLBACK_GAS_MIN = 250_000;
     uint32 public constant VRF_CALLBACK_GAS_MAX = 2_500_000; // Chainlink's maximum
     uint16 public constant VRF_CONFIRMATIONS = 3;
     /// @dev Blocks a VRF request Chainlink still holds must wait before it can be asked again (~25h at 12s blocks).
@@ -40,7 +40,10 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     uint256 public constant KEY_WAIT = 30 days;
 
     IArtHouse public immutable house;
-    address public immutable pieceImplementation;
+    /// @notice The locked ArtifactsPiece every claimed edition is a runtime copy of. Set once by the curator after the
+    /// launch (the piece is deployed outside IMD's one launch transaction, which EIP-7825 caps at 2^24 gas); the sale
+    /// cannot open without it.
+    address public pieceImplementation;
 
     // ---------- piece publication (before the sale, then locked forever) ----------
     struct PieceData {
@@ -112,6 +115,7 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     event MintPhasesSet(uint64 phase1Seconds, uint8 phase1Cap, uint64 phase2Seconds, uint8 phase2Cap);
     event VRFConfigured(address coordinator, bytes32 keyHash, uint256 subscriptionId, bool nativePayment);
     event VRFCallbackGasSet(uint32 gas);
+    event PieceImplementationSet(address implementation);
     event Purchased(address indexed buyer, address indexed broker, uint256 requestId, uint256 price);
     event EditionAssigned(uint256 indexed edition, address indexed buyer, uint256 requestId);
     event Rerequested(uint256 indexed oldRequestId, uint256 indexed newRequestId, address indexed buyer);
@@ -155,11 +159,23 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
     error NoFallback();
     error FallbackNotReady();
     error FallbackMissed();
+    error NoPieceImplementation();
+    error PieceImplementationAlreadySet();
+    error NotRegistered();
 
-    constructor(address owner_, address house_, address pieceImplementation_) TwoStepOwnable(owner_) {
-        if (house_ == address(0) || pieceImplementation_ == address(0)) revert ZeroAddress();
+    constructor(address owner_, address house_) TwoStepOwnable(owner_) {
+        if (house_ == address(0)) revert ZeroAddress();
         house = IArtHouse(house_);
-        pieceImplementation = pieceImplementation_;
+    }
+
+    /// @notice The locked ArtifactsPiece implementation (deployed by the curator after the launch, with the launched
+    /// KeyProof): set once, like the broker pass and the buyback burner in the ledger, so what a claim copies can never
+    /// change. Required before the sale opens.
+    function setPieceImplementation(address implementation) external onlyOwner {
+        if (pieceImplementation != address(0)) revert PieceImplementationAlreadySet();
+        if (implementation.code.length == 0) revert NoPieceImplementation();
+        pieceImplementation = implementation;
+        emit PieceImplementationSet(implementation);
     }
 
     // ---------- publication ----------
@@ -206,6 +222,9 @@ contract ArtifactsFactory is TwoStepOwnable, ReentrancyGuard, HolderGate {
             if (!locked) revert NotLocked();
             if (price == 0) revert WrongPrice();
             if (address(vrfCoordinator) == address(0)) revert VRFNotConfigured();
+            if (pieceImplementation == address(0)) revert NoPieceImplementation();
+            // the ledger must take this factory's sales before the holders window and the phases start counting
+            if (!house.canRecordSale(address(this))) revert NotRegistered();
             if (saleOpenedAt == 0) saleOpenedAt = uint64(block.timestamp);
         }
         saleOpen = open;

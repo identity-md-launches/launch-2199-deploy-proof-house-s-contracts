@@ -1,10 +1,11 @@
 # Proof House launch adaptation
 
-The eight manifest entries, their order and constructor arguments are unchanged:
-ArtStorage, ArtHouse, KeyProof, ArtifactsPiece, ArtifactsFactory, ArtifactsSource,
-BrokerPass, SubmissionReviews. `launch.json` was read, not edited. No token, pool,
-proxy, upgrade mechanism, deployment transaction or additional launch entry was
-added. The specified owner remains an explicit constructor argument wherever the
+The manifest now has seven entries, in this order: ArtStorage, ArtHouse, KeyProof,
+ArtifactsFactory, ArtifactsSource, BrokerPass, SubmissionReviews. ArtifactsPiece left
+the launch in the mainnet revision below (EIP-7825), and ArtifactsFactory and
+ArtifactsSource take it through a one-shot owner setter instead of a constructor
+argument; every other constructor argument is unchanged. No token, pool, proxy,
+upgrade mechanism or deployment transaction was added. The specified owner remains an explicit constructor argument wherever the
 project has ownership. Ownership remains two-step, without renunciation.
 
 The brief explicitly says that the owner configures everything after deployment.
@@ -12,6 +13,128 @@ That requirement takes precedence over the background recipe's generic instructi
 to move all configuration into constructors. Artist approval, publication, VRF
 configuration, wiring and sale opening therefore remain owner actions. No missing
 operational value was replaced with a fabricated production address or identifier.
+
+## Mainnet revision 2: the launch transaction and EIP-7825
+
+This section records the changes of this revision relative to the accepted tree
+(commit d379142). The sections below it are the earlier rounds' notes, kept as history.
+
+### 180a7e1d59e1 — the 8-contract launch exceeds EIP-7825's per-transaction gas cap: reproduced and fixed
+
+Full id: `180a7e1d59e12e6b95c6128645a5b9badf44dc0bd123c8ea45343cd28e7776fc`.
+
+Reproduced. The supplied proof, copied unchanged to `test/scratch/`, failed on the
+starting tree exactly as reported: the eight CREATE2s alone took 19,419,813 gas of
+execution and 20,853,017 gas with the intrinsic cost of 90,308 bytes of calldata,
+against the cap of 16,777,216 (2^24) that Ethereum mainnet enforces on every
+transaction since Fusaka. The protected harness deploys the whole manifest in one call,
+as `ProjectFactory.launchContracts` does, so no gas price or ceiling could have included
+that launch. The deposit cost of the runtime code (200 gas a byte for ≈86 KB) is the
+bulk and cannot be optimised away: about 19 KB of code had to leave the launch.
+
+What changed, and why this shape:
+
+- `launch.json`: ArtifactsPiece (24,132 bytes of runtime, the largest contract by far,
+  and only ever a template that claims copy) is no longer deployed by the launch.
+  ArtifactsFactory and ArtifactsSource are constructed with `($owner, $contract:ArtHouse)`.
+  The remaining seven contracts are deployed in the same order as before.
+- `launch.piece.json` (new, same shape as the existing `launch.burner.json`): the
+  curator deploys `ArtifactsPiece($contract:KeyProof)` right after the launch, with the
+  KeyProof the launch deployed, and checks its runtime against a build of this commit
+  before connecting it. The piece's own code is unchanged byte for byte.
+- `src/ArtifactsFactory.sol`, `src/ArtifactsSource.sol`: `pieceImplementation` is a
+  storage variable set once by `setPieceImplementation(address)` (owner only, refuses a
+  second call and an address without code, emits `PieceImplementationSet`), the same
+  set-once pattern the ledger already uses for the broker pass and the buyback burner.
+  `setSaleOpen(true)` and `setAuction` refuse to open while it is unset, so no sale can
+  start whose claim or settlement would have nothing to copy. What a claim copies can
+  never change once set: the connection is not upgradeable.
+- `script/Deploy.s.sol`, `test/Fixture.sol`: the two-argument constructors, then the
+  owner's `setPieceImplementation` step, so every existing test runs the launch order.
+- `test/LaunchDeployment.t.sol`: the CREATE2 rehearsal deploys the seven manifest
+  contracts, then performs the curator's step (deploy the piece with the launched
+  KeyProof, set it once on both, a second set and a non-owner's set refused).
+- `test/LaunchGasCap.t.sol` (new): the proof's own one-transaction loop over the seven
+  manifest contracts, asserting execution plus intrinsic calldata cost stays under the
+  cap with 1,000,000 gas kept for the factory's bookkeeping, then the curator's step.
+
+Measured with this commit (`forge test --match-path test/LaunchGasCap.t.sol -vv`):
+
+| | execution | total with calldata |
+|---|---|---|
+| 8 contracts, starting tree | 19,419,813 | 20,853,017 |
+| 7 contracts, this tree | 14,150,696 | 15,201,436 (1,575,780 under the cap) |
+
+The reviewer's proof (`Proof_180a7e1d59e1.t.sol`) hard-codes the previous manifest: it
+deploys ArtifactsPiece as the fourth contract and passes it to three-argument factory and
+source constructors. On this tree it still deploys all eight (the extra constructor word
+is ignored) and still measures ≈19.5M, because it measures a set the launch no longer
+deploys; it cannot pass with any fix that changes the manifest, which is the only kind
+that reaches the cap. `test/LaunchGasCap.t.sol` is the same loop over the manifest as it
+is now, and is the check this tree is held to. The finding is answered "disputed" for that
+reason alone; its substance is accepted and fixed.
+
+Why not the reviewer's first suggestion: creating the ArtCollection template lazily in
+`createCollection` moves ArtCollection's creation code from ArtHouse's init code into
+ArtHouse's runtime, which the launch deposits at the same 200 gas a byte, so it saves
+only the one CREATE and nothing of substance. Moving the metadata rendering out of the
+piece (≈9.8 KB, measured by compiling the piece without `tokenURI`) would have saved
+about 2.1M gas, short of the 4.1M needed, while changing the piece's code and adding a
+renderer dependency to every piece; taking the whole template out of the launch saves
+≈5.3M, keeps the piece byte-identical to the reviewed code, and follows the pattern the
+project already uses for the burner. The ArtCollection template stays in ArtHouse's
+constructor as before.
+
+Trust consequence, stated plainly: the piece implementation is no longer attested by the
+launch; the curator deploys it and the requester compares its runtime with their own
+build of this commit (as they do for every launched contract) before `setPieceImplementation`.
+Buyers can read `pieceImplementation()` on the factory and the source and compare it the
+same way. A wrong address cannot be corrected: a second call reverts.
+
+### a0cc401d2e36 — resale key posted after SELLER_WINDOW (the imported audit): already fixed in the accepted tree
+
+Reproduced on the tree as it arrived in the previous round and fixed there (the
+`TooLate` deadline in `postEscrowKey`, `test/EscrowDeadline.t.sol`, see the next section).
+The supplied proof `Proof_a0cc401d2e36.t.sol` passes on the starting tree of this
+revision and on its result. Nothing further changed for it.
+
+### Advisory findings
+
+- `5f41a376` (setSaleOpen without the ledger registered): reproduced on the starting
+  tree (`setSaleOpen(true)` succeeded with `canRecordSale(factory) == false`, after which
+  every buy reverted `NotSaleModule` while the holders window ran out). Fixed:
+  `setSaleOpen(true)` now reverts `NotRegistered` unless `house.canRecordSale(address(this))`,
+  before `saleOpenedAt` is written, exactly as `ArtifactsSource.setAuction` does.
+  Tested in `test/PieceImplementation.t.sol`.
+- `7b2e2f48` (reviewsOf panics on `start + count` overflow): reproduced
+  (`reviewsOf(0, 1, type(uint256).max)` panicked 0x11). Fixed: the page length is
+  clamped from the list length before any addition, so the idiom returns the tail.
+  Tested in `test/PieceImplementation.t.sol`.
+- `2c64d841` (VRF_CALLBACK_GAS_MIN below one draw's cost): the project's own fork test
+  needs 300k and the reviewer measured 216,317 for a first draw, so 150,000 admitted a
+  limit at which every callback fails. Fixed: `VRF_CALLBACK_GAS_MIN = 250_000`; the
+  existing bound tests (149,999 refused, 500,000 accepted) still hold, and README's
+  figures are updated. No test sets a value between the old and new minimum.
+- `23c8ec1c` (token leg of the holders window is a balance at the instant of the call):
+  not changed. The token leg was documented as a soft gate when the gate was designed:
+  IMD is freely transferable, so no instantaneous balance check can bind, and a
+  checkpointed token or a registration pre-window would change the brief's design.
+  Seats and members (ownership of a seat, membership in the gate contract) carry the
+  priority guarantee; the per-wallet and per-phase caps still apply to any wallet.
+- `2a619fed` (allowanceOf ignores saleOpen and the window): not changed; it is the
+  phase and wallet cap only, as its NatSpec says, and a front end checks `saleOpen`
+  and the gate views beside it. No contract logic depends on it.
+- `19bd0394` (a Chainlink answer inside a started fallback window leaves the fallback
+  views set): not changed. `_fallbackLive` is false once `requestEdition` is set, so the
+  stale `fallbackBlock`/`fallbackInFlight` values affect no draw; clearing them inside
+  `rawFulfillRandomWords` is cosmetic and was left alone to keep the draw code the
+  reviewed one.
+
+### Verification for this revision
+
+`forge build` (project configuration unchanged), `forge test` with
+`FOUNDRY_FUZZ_SEED=0xd866aa7377ecb437719b479dd53badc82fc76d051a9db942f07bd62360986989`;
+the supplied proofs run from `test/scratch/`. Results are in the final notes of the run.
 
 ## Current mainnet adaptation: resale posting deadline
 

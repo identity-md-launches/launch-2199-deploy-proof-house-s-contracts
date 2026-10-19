@@ -168,8 +168,9 @@ contract ArtifactsFactoryTest is Fixture {
 
     function test_vrfMustBeConfiguredBeforeSelling() public {
         // a fresh factory without VRF cannot open or sell
-        ArtifactsFactory fresh = new ArtifactsFactory(curator, address(house), address(pieceImpl));
+        ArtifactsFactory fresh = new ArtifactsFactory(curator, address(house));
         vm.startPrank(curator);
+        fresh.setPieceImplementation(address(pieceImpl));
         vm.expectRevert(ArtifactsFactory.VRFNotConfigured.selector);
         fresh.configureVRF(address(0), KEY_HASH, SUB_ID, false);
         vm.stopPrank();

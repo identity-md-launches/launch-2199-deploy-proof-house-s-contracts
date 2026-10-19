@@ -65,13 +65,9 @@ contract ArtHouseEdgeTest is Fixture {
         vm.expectRevert(TwoStepOwnable.ZeroAddress.selector);
         new ArtHouse(curator, address(store), address(0));
         vm.expectRevert(TwoStepOwnable.ZeroAddress.selector);
-        new ArtifactsFactory(curator, address(0), address(pieceImpl));
+        new ArtifactsFactory(curator, address(0));
         vm.expectRevert(TwoStepOwnable.ZeroAddress.selector);
-        new ArtifactsFactory(curator, address(house), address(0));
-        vm.expectRevert(TwoStepOwnable.ZeroAddress.selector);
-        new ArtifactsSource(curator, address(0), address(pieceImpl));
-        vm.expectRevert(TwoStepOwnable.ZeroAddress.selector);
-        new ArtifactsSource(curator, address(house), address(0));
+        new ArtifactsSource(curator, address(0));
     }
 
     /// @dev Constructors never call the addresses they are given, so they deploy on an empty chain.
@@ -80,10 +76,11 @@ contract ArtHouseEdgeTest is Fixture {
         ArtHouse h = new ArtHouse(curator, noCode, address(0x5678));
         assertEq(address(h.artStorage()), noCode);
         assertTrue(h.collectionImplementation().code.length > 0);
-        ArtifactsFactory f = new ArtifactsFactory(curator, noCode, address(0x5678));
+        ArtifactsFactory f = new ArtifactsFactory(curator, noCode);
         assertEq(address(f.house()), noCode);
-        ArtifactsSource s = new ArtifactsSource(curator, noCode, address(0x5678));
-        assertEq(s.pieceImplementation(), address(0x5678));
+        assertEq(f.pieceImplementation(), address(0));
+        ArtifactsSource s = new ArtifactsSource(curator, noCode);
+        assertEq(s.pieceImplementation(), address(0));
     }
 
     function test_pendingOwnerHasNoPowerBeforeAccepting() public {
@@ -641,8 +638,9 @@ contract ArtifactsEdgeTest is Fixture {
     }
 
     function test_configureVRFRejectsZeroes() public {
-        ArtifactsFactory fresh = new ArtifactsFactory(curator, address(house), address(pieceImpl));
+        ArtifactsFactory fresh = new ArtifactsFactory(curator, address(house));
         vm.startPrank(curator);
+        fresh.setPieceImplementation(address(pieceImpl));
         vm.expectRevert(ArtifactsFactory.VRFNotConfigured.selector);
         fresh.configureVRF(address(vrf), bytes32(0), SUB_ID, false);
         vm.expectRevert(ArtifactsFactory.VRFNotConfigured.selector);
@@ -672,8 +670,9 @@ contract ArtifactsEdgeTest is Fixture {
 
     /// @dev A VRF request that reverts (unfunded subscription) reverts the whole purchase: nothing is recorded.
     function test_buyRevertsAtomicallyWhenCoordinatorReverts() public {
-        ArtifactsFactory f = new ArtifactsFactory(curator, address(house), address(pieceImpl));
+        ArtifactsFactory f = new ArtifactsFactory(curator, address(house));
         vm.startPrank(curator);
+        f.setPieceImplementation(address(pieceImpl));
         house.setSaleModule(address(f), true);
         house.registerModuleCollection(address(f), artist);
         f.configureVRF(address(new RevertingCoordinator()), KEY_HASH, SUB_ID, false);
@@ -694,8 +693,9 @@ contract ArtifactsEdgeTest is Fixture {
 
     /// @dev A coordinator returning a request id already in use cannot overwrite the earlier buyer.
     function test_duplicateRequestIdRejected() public {
-        ArtifactsFactory f = new ArtifactsFactory(curator, address(house), address(pieceImpl));
+        ArtifactsFactory f = new ArtifactsFactory(curator, address(house));
         vm.startPrank(curator);
+        f.setPieceImplementation(address(pieceImpl));
         house.setSaleModule(address(f), true);
         house.registerModuleCollection(address(f), artist);
         f.configureVRF(address(new DuplicateIdCoordinator()), KEY_HASH, SUB_ID, false);
@@ -819,8 +819,9 @@ contract ArtifactsEdgeTest is Fixture {
     /// @dev A re-request whose coordinator call reverts leaves the original request intact and retryable.
     function test_rerequestIsAtomicWhenCoordinatorReverts() public {
         TogglingCoordinator coord = new TogglingCoordinator();
-        ArtifactsFactory f = new ArtifactsFactory(curator, address(house), address(pieceImpl));
+        ArtifactsFactory f = new ArtifactsFactory(curator, address(house));
         vm.startPrank(curator);
+        f.setPieceImplementation(address(pieceImpl));
         house.setSaleModule(address(f), true);
         house.registerModuleCollection(address(f), artist);
         f.configureVRF(address(coord), KEY_HASH, SUB_ID, false);

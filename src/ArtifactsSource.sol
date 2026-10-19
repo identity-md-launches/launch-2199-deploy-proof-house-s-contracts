@@ -24,7 +24,10 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
     uint256 public constant SETTLE_GRACE = 7 days;
 
     IArtHouse public immutable house;
-    address public immutable pieceImplementation;
+    /// @notice The locked ArtifactsPiece THE SOURCE is a runtime copy of. Set once by the curator after the launch (the
+    /// piece is deployed outside IMD's one launch transaction, which EIP-7825 caps at 2^24 gas); the auction cannot
+    /// open without it.
+    address public pieceImplementation;
 
     // ---------- the renderer and the sealed seed ----------
     address[] private _chunks; // the renderer page: ARTIFACTS' rules.js in an HTML page, up to where the seed goes
@@ -55,6 +58,7 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
     event RefundWithdrawn(address indexed bidder, uint256 amount);
     event Settled(address indexed winner, uint256 amount, address piece);
     event AuctionVoided(address indexed bidder, uint256 amount);
+    event PieceImplementationSet(address implementation);
 
     error IsLocked();
     error NotLocked();
@@ -73,11 +77,21 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
     error NotSettled();
     error AlreadyDelivered();
     error NotRegistered();
+    error NoPieceImplementation();
+    error PieceImplementationAlreadySet();
 
-    constructor(address owner_, address house_, address pieceImplementation_) TwoStepOwnable(owner_) {
-        if (house_ == address(0) || pieceImplementation_ == address(0)) revert ZeroAddress();
+    constructor(address owner_, address house_) TwoStepOwnable(owner_) {
+        if (house_ == address(0)) revert ZeroAddress();
         house = IArtHouse(house_);
-        pieceImplementation = pieceImplementation_;
+    }
+
+    /// @notice The locked ArtifactsPiece implementation (deployed by the curator after the launch, with the launched
+    /// KeyProof): set once, so what settlement copies can never change. Required before the auction opens.
+    function setPieceImplementation(address implementation) external onlyOwner {
+        if (pieceImplementation != address(0)) revert PieceImplementationAlreadySet();
+        if (implementation.code.length == 0) revert NoPieceImplementation();
+        pieceImplementation = implementation;
+        emit PieceImplementationSet(implementation);
     }
 
     // ---------- the renderer and the sealed seed (from the artist's offline ceremony) ----------
@@ -151,6 +165,7 @@ contract ArtifactsSource is TwoStepOwnable, ReentrancyGuard, HolderGate {
     function setAuction(uint256 reserve_, uint64 endTime_) external onlyOwner {
         if (!locked) revert NotLocked();
         if (!house.canRecordSale(address(this))) revert NotRegistered();
+        if (pieceImplementation == address(0)) revert NoPieceImplementation();
         if (settled) revert AlreadySettled();
         if (highBidder != address(0)) revert AuctionLive();
         if (endTime_ <= block.timestamp) revert BadEndTime();

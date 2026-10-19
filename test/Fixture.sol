@@ -53,6 +53,8 @@ abstract contract Fixture is Test {
         // after-launch curator steps
         vm.startPrank(curator);
         store.setHouse(address(house));
+        factory.setPieceImplementation(address(pieceImpl));
+        source.setPieceImplementation(address(pieceImpl));
         house.approveArtist(artist, "Myles");
         house.setBroker(broker, true);
         house.setSaleModule(address(factory), true);

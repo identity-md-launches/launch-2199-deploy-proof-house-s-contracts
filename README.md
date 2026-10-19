@@ -11,25 +11,27 @@ No fungible token or pool is created. IMD (`0xd34a99bc0f67ae1bbd63c660e6d0b0dd03
 pay with; the buyback swaps on IMD's existing ETH/IMD Uniswap v4 pool. The only tokens are ERC-721 pieces, minted
 only when a piece is bought.
 
-## Launch set (8 contracts by IMD, in this order, from `launch.json`; then the burner, from `launch.burner.json`)
+## Launch set (7 contracts by IMD, in this order, from `launch.json`; then the piece, from `launch.piece.json`, and the burner, from `launch.burner.json`)
 
 | # | Contract | Constructor | Role |
 |---|----------|-------------|------|
 | 0 | `ArtStorage` | `($owner)` | SSTORE2 chunk store for plain SVG collections; written only by ArtHouse |
 | 1 | `ArtHouse` | `($owner, $contract:ArtStorage, IMD)` | The ledger: artists, brokers, sale modules, splits, balances, plain collections, submissions. Its constructor deploys the `ArtCollection` implementation. |
 | 1b | `KeyProof` | `()` | Stateless checker: proves a resale's wrapped key doesn't open its piece (Chaum-Pedersen on secp256k1, checked with ecrecover and modexp); a key that opens can never be proven fake |
-| 2 | `ArtifactsPiece` | `($contract:KeyProof)` | Locked implementation: a one-token ERC-721 + ERC-2981 per piece (each one a full runtime copy, edition and THE SOURCE alike: no proxy and no DELEGATECALL anywhere, as IMD's launch scan requires); its resale escrow takes a 10% seller deposit with the key, returned at release, the buyer's if the key is proven fake |
-| 3 | `ArtifactsFactory` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | Publishes the 255 editions, sells them, VRF assignment, claims |
-| 4 | `ArtifactsSource` | `($owner, $contract:ArtHouse, $contract:ArtifactsPiece)` | THE SOURCE: encrypted payload, single-lot auction, settlement, one key delivery |
-| 5 | `BrokerPass` | `(identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | 100 free passes that make a wallet a broker: one per seat or piece and one per wallet, ever; claims open at a start time the factory's owner sets once (`setClaimsOpenAt`) |
-| 6 | `SubmissionReviews` | `($contract:ArtHouse, identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | Advisory reviews of artist submissions: one voice per identity.md seat and per claimed piece; frozen once the curator decides; no owner |
+| after | `ArtifactsPiece` | `($contract:KeyProof)` | Not in IMD's launch since the mainnet revision: with it the one launch transaction needed ≈20.9M gas, above EIP-7825's cap of 16,777,216 (2^24) that Ethereum mainnet enforces since Fusaka; the curator deploys it right after, from `launch.piece.json`, with the launched `KeyProof`, compares its runtime with a build of this commit, and connects it once with `ArtifactsFactory.setPieceImplementation` and `ArtifactsSource.setPieceImplementation` (set once, never changed; the edition sale and THE SOURCE's auction cannot open without it). Locked implementation: a one-token ERC-721 + ERC-2981 per piece (each one a full runtime copy, edition and THE SOURCE alike: no proxy and no DELEGATECALL anywhere, as IMD's launch scan requires); its resale escrow takes a 10% seller deposit with the key, returned at release, the buyer's if the key is proven fake |
+| 2 | `ArtifactsFactory` | `($owner, $contract:ArtHouse)` | Publishes the 255 editions, sells them, VRF assignment, claims |
+| 3 | `ArtifactsSource` | `($owner, $contract:ArtHouse)` | THE SOURCE: encrypted payload, single-lot auction, settlement, one key delivery |
+| 4 | `BrokerPass` | `(identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | 100 free passes that make a wallet a broker: one per seat or piece and one per wallet, ever; claims open at a start time the factory's owner sets once (`setClaimsOpenAt`) |
+| 5 | `SubmissionReviews` | `($contract:ArtHouse, identity.md seats, $contract:ArtifactsFactory, $contract:ArtifactsSource)` | Advisory reviews of artist submissions: one voice per identity.md seat and per claimed piece; frozen once the curator decides; no owner |
 | after | `ImdBuybackBurner` | `($contract:ArtHouse, Uniswap v4 PoolManager, IMD, 10000, 200, 0x0)` | Not in IMD's launch (an `evm_contracts` launch deploys at most 8 contracts, with unsigned-integer arguments; its tick spacing is an `int24`): the curator deploys it right after with `tools/deploy/deploy_manifest.py --manifest launch.burner.json --existing <deployment.json>`, then `ArtHouse.setBuybackBurner`. Receives the ledger's buyback balance; the curator swaps ETH for IMD on the ETH/IMD pool fixed here for good (1% fee, tick spacing 200, no hook), always with a minimum above zero and a deadline, the IMD going straight to the dead address; after 60 days without a curator swap anyone may swap, exactly 0.05 ETH (or all that is left) once a day, so the ETH can't be stuck; anyone burns IMD it holds |
 
 `$owner` is the curator: `0xd3e32C1eBEa3a675EffCaAcAf89196948Abd1386`. `script/Deploy.s.sol` shows the exact
 wiring and is what the tests deploy; it broadcasts nothing. Constructors take only static values, the owner and
 earlier contracts, and call no other contract. ArtifactsSource was split out of ArtifactsFactory so every
 runtime stays under the EIP-170 limit of 24,576 bytes (largest: ArtifactsPiece, 24,132 bytes, 444 under it;
-`forge build --sizes`).
+`forge build --sizes`). The launch transaction itself (the 7 contracts, one CREATE2 each, calldata included) is
+measured by `test/LaunchGasCap.t.sol` at 15,201,436 gas (14,150,696 of execution), under EIP-7825's 16,777,216 with
+≈1.58M to spare for the factory's bookkeeping; the 8-contract set of the previous round needed ≈20.9M, which no mainnet block may include.
 
 Ownership is two-step everywhere (`transferOwnership` → `acceptOwnership`); there is no `renounceOwnership`,
 no upgradeability, no DELEGATECALL/SELFDESTRUCT in any launched runtime. ETH leaves contracts by `call`, pull-style.
@@ -42,7 +44,9 @@ on a known draw. ADAPTATION.md records every change and finding.
 
 ## After launch (curator, in this order)
 
-1. `ArtStorage.setHouse(ArtHouse)`: one time, irreversible.
+1. Deploy `ArtifactsPiece(KeyProof)` from `launch.piece.json`, check its runtime against a build of this commit, then
+   `ArtifactsFactory.setPieceImplementation(piece)` and `ArtifactsSource.setPieceImplementation(piece)`: one time each,
+   irreversible (the address must have code). `ArtStorage.setHouse(ArtHouse)`: one time, irreversible.
 2. `ArtHouse.approveArtist(artist, name)` for the ARTIFACTS artist. The artist may `setPayout(address)` later;
    payout is kept across revoke/re-approval. The artist's ETH share is paid to the payout address at each sale (a
    primary sale and a resale royalty alike), with a 50,000 gas stipend and no return data copied; if that address
@@ -62,7 +66,7 @@ on a known draw. ADAPTATION.md records every change and finding.
    from Chainlink's published VRF v2.5 coordinator and key hash, and the curator's own subscription id
    (create it at vrf.chain.link, fund it, and add ArtifactsFactory as a consumer). `nativePayment=false` pays in
    LINK, `true` in ETH. Buying reverts with `VRFNotConfigured` until this is done.
-   `setVRFCallbackGas(gas)`: any value from 150,000 to 2,500,000 before the sale opens; after it opens, only up.
+   `setVRFCallbackGas(gas)`: any value from 250,000 to 2,500,000 before the sale opens; after it opens, only up.
 7. `ArtifactsFactory.setPiece(id, traits, ciphertext, commitment)` for ids 1..255: public traits (title, palette,
    colour count, direction), the AES-256-GCM encrypted seed and `keccak256(K)`. Then `lock()`, forever.
 8. THE SOURCE: the artist's offline ceremony (`tools/source/ceremony.js` in the Proof House workspace) makes its
@@ -79,7 +83,9 @@ on a known draw. ADAPTATION.md records every change and finding.
    cap and only 32 bytes of answer, so the membership contract can never make a buy fail. Members buy as token
    holders do (`buy`, `buyMany`, `bid`). Then `ArtifactsSource.setAuction(reserveWei, endTime)`.
 10. Once THE SOURCE's auction has closed: `ArtifactsFactory.setPrice(wei)` (above zero, only while closed) and
-    `setSaleOpen(true)`.
+    `setSaleOpen(true)` (refused until the piece implementation is set and the ledger takes the factory's sales:
+    `setSaleModule` and `registerModuleCollection` first, as `setAuction` already requires, since the holders window
+    and the mint phases start counting at the first open and never restart).
 
 ## ARTIFACTS flow
 
@@ -91,8 +97,8 @@ on a known draw. ADAPTATION.md records every change and finding.
   transfer), then a VRF v2.5 request is made. The callback
   `rawFulfillRandomWords` (coordinator only) assigns a uniformly random unassigned edition by a lazy
   Fisher-Yates over 1..255: none twice, none skipped (tested over all 255 purchases). Its gas limit is
-  `vrfCallbackGas` (default 1,000,000; the curator sets 150k to 2.5M with `setVRFCallbackGas`): one assignment cost
-  ≈150k gas under today's mainnet pricing and ≈670k under Glamsterdam's state repricing (measured on Sepolia, where
+  `vrfCallbackGas` (default 1,000,000; the curator sets 250k to 2.5M with `setVRFCallbackGas`): one assignment cost
+  ≈176k–217k gas under today's mainnet pricing (the minimum, 250k, stays above the dearest draw) and ≈670k under Glamsterdam's state repricing (measured on Sepolia, where
   250k made every callback fail). If a draw will never be answered, the curator or the buyer may
   `rerequestRandomness(requestId)`: at once if the coordinator already answered and the callback failed (its
   `s_requestCommitments` entry is gone), otherwise once `VRF_RETRY_BLOCKS` (~25h) have passed, after Chainlink drops
@@ -188,7 +194,7 @@ pays the current owner. Every piece pays a 7.5% ERC-2981 royalty to its artist's
 
 | Constant | Value | Where |
 |----------|-------|-------|
-| `vrfCallbackGas` (curator-set) | 1,000,000 default, 150,000 to 2,500,000; after the sale opens, only up | ArtifactsFactory |
+| `vrfCallbackGas` (curator-set) | 1,000,000 default, 250,000 to 2,500,000; after the sale opens, only up | ArtifactsFactory |
 | `MAX_PER_WALLET` | 5 | ArtifactsFactory |
 | mint phases (`setMintPhases`) | launch: Allowlist 2 per wallet and per seat for 12 h, Allowlist overflow 3 in all for 12 h, then Public 5; set before the sale opens | ArtifactsFactory |
 | `VRF_CONFIRMATIONS` | 3 | ArtifactsFactory |

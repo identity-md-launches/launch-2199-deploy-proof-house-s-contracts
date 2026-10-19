@@ -1,0 +1,12 @@
+{
+ "kind": "evm_contracts",
+ "contracts": [
+  {
+   "contract": "ArtifactsPiece",
+   "constructorArgs": [
+    "$contract:KeyProof"
+   ]
+  }
+ ],
+ "notes": "Deployed by the curator right after the IMD launch, outside it: its 24,132-byte runtime would push the one launch transaction over EIP-7825's 2^24 gas cap. $contract:KeyProof is the KeyProof that launch deployed. The locked ArtifactsPiece implementation (constructor sets controller to itself, so only runtime copies can be initialised); no owner. Then, once each, ArtifactsFactory.setPieceImplementation(this) and ArtifactsSource.setPieceImplementation(this): neither the edition sale nor THE SOURCE's auction can open before. Compare its runtime code with a build of this commit before connecting it."
+}

@@ -40,35 +40,30 @@ contract LaunchDeploymentTest is Test {
         internal
         returns (bytes[] memory codes, address[] memory predicted)
     {
-        codes = new bytes[](8);
-        predicted = new address[](8);
+        codes = new bytes[](7);
+        predicted = new address[](7);
         // Every dependency is code-less when constructor isolation is requested. These are test inputs only.
         address empty = makeAddr("empty constructor dependency");
         assertEq(empty.code.length, 0);
-        for (uint256 i; i < 8; ++i) {
+        // ArtifactsPiece is no longer in the launch: the curator deploys it after and connects it once (EIP-7825).
+        for (uint256 i; i < 7; ++i) {
             address storage_ = emptyDependencies ? empty : predicted[0];
             address house_ = emptyDependencies ? empty : predicted[1];
-            address proof_ = emptyDependencies ? empty : predicted[2];
-            address piece_ = emptyDependencies ? empty : predicted[3];
-            address factory_ = emptyDependencies ? empty : predicted[4];
-            address source_ = emptyDependencies ? empty : predicted[5];
+            address factory_ = emptyDependencies ? empty : predicted[3];
+            address source_ = emptyDependencies ? empty : predicted[4];
             if (i == 0) codes[i] = bytes.concat(vm.getCode("ArtStorage.sol:ArtStorage"), abi.encode(OWNER));
             if (i == 1) codes[i] = bytes.concat(vm.getCode("ArtHouse.sol:ArtHouse"), abi.encode(OWNER, storage_, IMD));
             if (i == 2) codes[i] = vm.getCode("KeyProof.sol:KeyProof");
-            if (i == 3) codes[i] = bytes.concat(vm.getCode("ArtifactsPiece.sol:ArtifactsPiece"), abi.encode(proof_));
+            if (i == 3) {
+                codes[i] = bytes.concat(vm.getCode("ArtifactsFactory.sol:ArtifactsFactory"), abi.encode(OWNER, house_));
+            }
             if (i == 4) {
-                codes[i] = bytes.concat(
-                    vm.getCode("ArtifactsFactory.sol:ArtifactsFactory"), abi.encode(OWNER, house_, piece_)
-                );
+                codes[i] = bytes.concat(vm.getCode("ArtifactsSource.sol:ArtifactsSource"), abi.encode(OWNER, house_));
             }
             if (i == 5) {
-                codes[i] =
-                    bytes.concat(vm.getCode("ArtifactsSource.sol:ArtifactsSource"), abi.encode(OWNER, house_, piece_));
-            }
-            if (i == 6) {
                 codes[i] = bytes.concat(vm.getCode("BrokerPass.sol:BrokerPass"), abi.encode(SEATS, factory_, source_));
             }
-            if (i == 7) {
+            if (i == 6) {
                 codes[i] = bytes.concat(
                     vm.getCode("SubmissionReviews.sol:SubmissionReviews"), abi.encode(house_, SEATS, factory_, source_)
                 );
@@ -106,7 +101,7 @@ contract LaunchDeploymentTest is Test {
         for (uint256 i; i < deployed.length; ++i) {
             _scan(deployed[i]);
         }
-        uint256[4] memory owned = [uint256(0), 1, 4, 5];
+        uint256[4] memory owned = [uint256(0), 1, 3, 4];
         for (uint256 i; i < owned.length; ++i) {
             TwoStepOwnable target = TwoStepOwnable(deployed[owned[i]]);
             assertEq(target.owner(), OWNER);
@@ -120,7 +115,7 @@ contract LaunchDeploymentTest is Test {
         }
     }
 
-    function test_allEightConstructorsAcceptCodeLessDependencies() public {
+    function test_allSevenConstructorsAcceptCodeLessDependencies() public {
         _deploy(true);
     }
 
@@ -129,17 +124,35 @@ contract LaunchDeploymentTest is Test {
         address[] memory deployed = _deploy(false);
         ArtStorage store = ArtStorage(deployed[0]);
         ArtHouse house = ArtHouse(deployed[1]);
-        ArtifactsFactory factory = ArtifactsFactory(deployed[4]);
-        ArtifactsSource source = ArtifactsSource(deployed[5]);
-        BrokerPass pass = BrokerPass(deployed[6]);
-        SubmissionReviews reviews = SubmissionReviews(deployed[7]);
+        ArtifactsFactory factory = ArtifactsFactory(deployed[3]);
+        ArtifactsSource source = ArtifactsSource(deployed[4]);
+        BrokerPass pass = BrokerPass(deployed[5]);
+        SubmissionReviews reviews = SubmissionReviews(deployed[6]);
         assertEq(address(house.artStorage()), address(store));
         assertEq(house.imd(), IMD);
-        assertEq(address(ArtifactsPiece(deployed[3]).keyProof()), deployed[2]);
         assertEq(address(factory.house()), address(house));
-        assertEq(factory.pieceImplementation(), deployed[3]);
+        assertEq(factory.pieceImplementation(), address(0));
         assertEq(address(source.house()), address(house));
-        assertEq(source.pieceImplementation(), deployed[3]);
+        assertEq(source.pieceImplementation(), address(0));
+        // the curator's step after the launch: the piece implementation, with the launched KeyProof, set once
+        vm.startPrank(OWNER);
+        ArtifactsPiece piece = new ArtifactsPiece(deployed[2]);
+        _scan(address(piece));
+        vm.expectRevert(ArtifactsFactory.NoPieceImplementation.selector);
+        factory.setPieceImplementation(makeAddr("no code"));
+        factory.setPieceImplementation(address(piece));
+        source.setPieceImplementation(address(piece));
+        vm.expectRevert(ArtifactsFactory.PieceImplementationAlreadySet.selector);
+        factory.setPieceImplementation(address(piece));
+        vm.expectRevert(ArtifactsSource.PieceImplementationAlreadySet.selector);
+        source.setPieceImplementation(address(piece));
+        vm.stopPrank();
+        vm.prank(makeAddr("not the owner"));
+        vm.expectRevert(TwoStepOwnable.NotOwner.selector);
+        factory.setPieceImplementation(address(piece));
+        assertEq(address(piece.keyProof()), deployed[2]);
+        assertEq(factory.pieceImplementation(), address(piece));
+        assertEq(source.pieceImplementation(), address(piece));
         assertEq(address(pass.seats()), SEATS);
         assertEq(pass.factory(), address(factory));
         assertEq(pass.source(), address(source));
